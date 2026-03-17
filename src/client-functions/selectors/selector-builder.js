@@ -157,6 +157,8 @@ export default class SelectorBuilder extends ClientFunctionBuilder {
             visibilityCheck:           !!this.options.visibilityCheck,
             timeout:                   this.options.timeout,
             strictError:               this.options.strictError,
+            counterMode:               !!this.options.counterMode, // isolated session selector support
+            getVisibleValueMode:       !!this.options.getVisibleValueMode,
         });
     }
 

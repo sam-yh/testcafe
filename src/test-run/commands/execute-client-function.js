@@ -39,6 +39,8 @@ export class ExecuteSelectorCommand extends ExecuteClientFunctionCommandBase {
             { name: 'needError' },
             { name: 'index', defaultValue: 0 },
             { name: 'strictError' },
+            { name: 'counterMode', defaultValue: false }, // isolated session selector support
+            { name: 'getVisibleValueMode', defaultValue: false },
         ];
     }
 }

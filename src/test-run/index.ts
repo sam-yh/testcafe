@@ -137,6 +137,9 @@ import NativeAutomationRequestPipeline from '../native-automation/request-pipeli
 import { NativeAutomationBase } from '../native-automation';
 import ReportDataLog from '../reporter/report-data-log';
 import remoteChrome from 'chrome-remote-interface';
+// isolated session support
+import { IsolatedSession } from './isolated-session';
+import { IsolatedTestController } from '../api/test-controller/isolated';
 
 const lazyRequire                   = require('import-lazy')(require);
 const ClientFunctionBuilder         = lazyRequire('../client-functions/client-function-builder');
@@ -272,6 +275,7 @@ export default class TestRun extends AsyncEventEmitter {
     private readonly _roleProvider: RoleProvider;
     public readonly isNativeAutomation: boolean;
     public readonly isExperimentalMultipleWindows: boolean;
+    private _isolatedSessions: IsolatedSession[];
 
     public constructor ({ test, browserConnection, screenshotCapturer, globalWarningLog, opts, messageBus, startRunExecutionTime, nativeAutomation }: TestRunInit) {
         super();
@@ -303,6 +307,7 @@ export default class TestRun extends AsyncEventEmitter {
 
         this.disableMultipleWindows        = opts.disableMultipleWindows as boolean;
         this.isExperimentalMultipleWindows = opts.experimentalMultipleWindows as boolean;
+        this._isolatedSessions             = [];
 
         this.requestTimeout = this._getRequestTimeout(test, opts);
 
@@ -717,6 +722,8 @@ export default class TestRun extends AsyncEventEmitter {
 
             await this._enqueueSetBreakpointCommand(void 0, null, errStr);
         }
+
+        await this._disposeIsolatedSessions();
 
         await this.emit('before-done');
 
@@ -1440,6 +1447,44 @@ export default class TestRun extends AsyncEventEmitter {
         const { disableMultipleWindows, test } = testRun;
 
         return !disableMultipleWindows && !(test as LegacyTestRun).isLegacy && !!testRun.activeWindowId;
+    }
+
+    // isolated session lifecycle — create, dispose, find
+    public async createIsolatedSession (): Promise<IsolatedSession> {
+        const plugin = this.browserConnection.provider.plugin;
+
+        const { nativeAutomation, contextId } =
+            await plugin.createIsolatedSession(this.browserConnection.id);
+
+        const session = new IsolatedSession({
+            parentTestRun:    this,
+            nativeAutomation,
+            browserContextId: contextId,
+        });
+
+        session.controller = new IsolatedTestController(session);
+
+        this._isolatedSessions.push(session);
+
+        return session;
+    }
+
+    private async _disposeIsolatedSessions (): Promise<void> {
+        for (const session of this._isolatedSessions) {
+            // Best-effort teardown: a dispose failure must not mask the test result.
+            try {
+                await session.dispose();
+            }
+            catch (e) {
+                // ignore
+            }
+        }
+
+        this._isolatedSessions = [];
+    }
+
+    public getIsolatedSession (sessionId: string): IsolatedSession | undefined {
+        return this._isolatedSessions.find(s => s.id === sessionId);
     }
 
     public async initialize (): Promise<void> {

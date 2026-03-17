@@ -71,6 +71,7 @@ export class BrowserClient {
     private _videoFramesBuffer: VideoFrameData[];
     private _lastFrame: VideoFrameData | null;
     private _screencastFrameListenerAttached = false;
+    private _browserLevelClient: remoteChrome.ProtocolApi | null = null;
 
     public constructor (runtimeInfo: RuntimeInfo) {
         this._runtimeInfo = runtimeInfo;
@@ -361,6 +362,21 @@ export class BrowserClient {
     }
 
     public async closeTab (): Promise<void> {
+        // close the cached browser-level CDP connection opened for isolated sessions
+        if (this._browserLevelClient) {
+            // chrome-remote-interface types omit close()
+            const browserLevelClient: any = this._browserLevelClient;
+
+            try {
+                await browserLevelClient.close();
+            }
+            catch (err) {
+                debugLog(err);
+            }
+
+            this._browserLevelClient = null;
+        }
+
         if (this._parentTarget)
             await remoteChrome.Close({ id: this._parentTarget.id, port: this._port });
     }
@@ -458,6 +474,78 @@ export class BrowserClient {
 
             return null;
         }
+    }
+
+    // browser-level CDP client + isolated context creation/disposal
+    private async _getBrowserLevelClient (): Promise<remoteChrome.ProtocolApi> {
+        if (this._browserLevelClient)
+            return this._browserLevelClient;
+
+        // Connect to the browser-level CDP endpoint (not a specific tab)
+        // This is needed for Target domain commands like createBrowserContext
+        // @ts-ignore — chrome-remote-interface supports Version but types are incomplete
+        const version = await remoteChrome.Version({ port: this._port });
+        // @ts-ignore — target can be a websocket URL string
+        const client  = await remoteChrome({ target: version.webSocketDebuggerUrl });
+
+        this._browserLevelClient = client;
+
+        return client;
+    }
+
+    // Public accessor for isolated-session window management (Browser.setWindowBounds etc.)
+    public async getBrowserLevelClient (): Promise<remoteChrome.ProtocolApi> {
+        return this._getBrowserLevelClient();
+    }
+
+    public async createIsolatedContext (): Promise<{ contextId: string, targetId: string, client: remoteChrome.ProtocolApi }> {
+        const browserClient = await this._getBrowserLevelClient();
+
+        const { browserContextId } = await browserClient.Target.createBrowserContext({});
+        const { targetId } = await browserClient.Target.createTarget({
+            url:              'about:blank',
+            browserContextId: browserContextId,
+            newWindow:        true,
+        });
+
+        const target = await getTabById(this._port, targetId);
+
+        if (!target)
+            throw new Error(`Failed to find newly created isolated target ${targetId}`);
+
+        const client = await this._createClient(target, `isolated-${browserContextId}`);
+
+        return { contextId: browserContextId, targetId, client };
+    }
+
+    public async disposeIsolatedContext (contextId: string): Promise<void> {
+        const cacheKey = `isolated-${contextId}`;
+
+        // Close the CDP WebSocket connection for the isolated target
+        const clientInfo = this._clients[cacheKey];
+
+        if (clientInfo) {
+            // chrome-remote-interface types omit close()
+            const isolatedClient: any = clientInfo.client;
+
+            try {
+                await isolatedClient.close();
+            }
+            catch (err) {
+                debugLog(err);
+            }
+        }
+
+        try {
+            const browserClient = await this._getBrowserLevelClient();
+
+            await browserClient.Target.disposeBrowserContext({ browserContextId: contextId });
+        }
+        catch (err) {
+            debugLog(err);
+        }
+
+        delete this._clients[cacheKey];
     }
 
     public async createMainWindowNativeAutomation (options: NativeAutomationInitOptions): Promise<NativeAutomationBase | null> {

@@ -647,6 +647,23 @@ export default class TestController {
     [delegatedAPI(ReportCommand.methodName)] (...args) {
         return this.enqueueCommand(ReportCommand, { args });
     }
+
+    // isolated session opener — creates a CDP-isolated browser context
+    _openIsolatedSession$ () {
+        const callsite = getCallsiteForMethod('openIsolatedSession');
+
+        return this._enqueueTask('openIsolatedSession', () => {
+            return async () => {
+                if (!this.testRun.isNativeAutomation)
+                    throw new Error('openIsolatedSession requires Native Automation mode');
+
+                const isolatedSession = await this.testRun.createIsolatedSession();
+
+                return isolatedSession.controller;
+            };
+        }, callsite);
+    }
+
     shouldStop (command) {
         // NOTE: should always stop on Debug command
         return command === 'debug';
